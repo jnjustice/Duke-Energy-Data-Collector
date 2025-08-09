@@ -1,0 +1,32 @@
+alias: Prior Day Energy Usage
+description: Send daily energy usage from Duke Energy (Gas & Electric)
+triggers:
+  - trigger: time
+    at: "07:00:00"
+conditions: []
+actions:
+  - data:
+      title: >
+        ⚡🔥 Duke Energy Usage: {{ (now() - timedelta(days=1)).strftime('%a
+        %m/%d') }}
+      message: >
+        ⚡ Electric: {{ states('sensor.duke_energy_electric_usage') | round(1) }}
+        kWh  💰 ${{ (states('sensor.duke_energy_electric_usage') | float *
+        0.1000) | round(2) }}
+
+        🔥 Gas: {{ states('sensor.duke_energy_gas_usage') | round(2) }} CCF  💰
+        ${{ (states('sensor.duke_energy_gas_usage') | float * 0.6000) | round(2)
+        }}
+
+        📊 Total Cost: ${{ ((states('sensor.duke_energy_electric_usage') | float
+        * 0.1000) + (states('sensor.duke_energy_gas_usage') | float * 0.6000)) |
+        round(2) }}
+      data:
+        notification_icon: mdi:home-lightning-bolt
+        color: "#4CAF50"
+        tag: energy_usage
+        actions:
+          - action: VIEW_ENERGY
+            title: View Energy Dashboard
+    action: notify.mobile_app_oneplus13
+mode: single
