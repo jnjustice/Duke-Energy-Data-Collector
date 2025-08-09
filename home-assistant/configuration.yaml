@@ -1,0 +1,122 @@
+# Duke Energy Data Integration
+rest:
+  # Current daily data
+  - resource: "http://0.0.0.0:3001/gas-latest"
+    scan_interval: 300
+    sensor:
+      - name: "Duke Energy Gas Usage"
+        value_template: "{{ value_json.usage_ccf if value_json else 0 }}"
+        unit_of_measurement: "CCF"
+        device_class: gas
+        state_class: total_increasing
+        icon: "mdi:fire"
+      
+      - name: "Duke Energy Gas Date"
+        value_template: "{{ value_json.date_label if value_json else 'unknown' }}"
+        icon: "mdi:calendar"
+
+  - resource: "http://0.0.0.0:3001/electric-latest"
+    scan_interval: 300
+    sensor:
+      - name: "Duke Energy Electric Usage"
+        value_template: "{{ value_json.usage_kwh if value_json else 0 }}"
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: total_increasing
+        icon: "mdi:lightning-bolt"
+
+  # Historical data for Energy Dashboard
+  - resource: "http://0.0.0.0:3001/gas-history"
+    scan_interval: 3600  # Check hourly
+    sensor:
+      - name: "Duke Gas History Count"
+        value_template: "{{ value_json | length }}"
+        json_attributes_path: "$"
+        json_attributes:
+          - gas_history
+
+  - resource: "http://0.0.0.0:3001/electric-history"
+    scan_interval: 3600
+    sensor:
+      - name: "Duke Electric History Count"
+        value_template: "{{ value_json | length }}"
+        json_attributes_path: "$"
+        json_attributes:
+          - electric_history
+
+# Template sensors for conversions and costs
+template:
+  - sensor:
+      - name: "Duke Gas Usage (Therms)"
+        state: >
+          {% set ccf = states('sensor.duke_energy_gas_usage') | float(0) %}
+          {{ (ccf * 1.037) | round(3) }}
+        unit_of_measurement: "therms"
+        device_class: gas
+        state_class: total_increasing
+        icon: "mdi:fire"
+        availability: >
+          {{ states('sensor.duke_energy_gas_usage') not in ['unavailable', 'unknown', 'none'] }}
+        
+      - name: "Duke Gas Daily Cost"
+        state: >
+          {% set ccf = states('sensor.duke_energy_gas_usage') | float(0) %}
+          {{ (ccf * 0.5685) | round(2) }}
+        unit_of_measurement: "$"
+        device_class: monetary
+        icon: "mdi:currency-usd"
+        
+      - name: "Duke Electric Daily Cost"
+        state: >
+          {% set kwh = states('sensor.duke_energy_electric_usage') | float(0) %}
+          {{ (kwh * 0.0929) | round(2) }}
+        unit_of_measurement: "$"
+        device_class: monetary
+        icon: "mdi:currency-usd"
+
+# Historical data sensors for individual days (for Energy Dashboard)
+  - trigger:
+      - platform: state
+        entity_id: sensor.duke_gas_history_count
+      - platform: state
+        entity_id: sensor.duke_electric_history_count
+    sensor:
+      # Create individual sensors for each historical day
+      - name: "Duke Gas Historical Data"
+        state: >
+          {% set history = state_attr('sensor.duke_gas_history_count', 'gas_history') %}
+          {% if history and history | length > 0 %}
+            {{ history | length }}
+          {% else %}
+            0
+          {% endif %}
+        attributes:
+          daily_data: >
+            {% set history = state_attr('sensor.duke_gas_history_count', 'gas_history') %}
+            {% if history %}
+              {{ history }}
+            {% else %}
+              []
+            {% endif %}
+
+# Utility meters for monthly/yearly tracking
+utility_meter:
+  monthly_gas_usage:
+    source: sensor.duke_gas_usage_therms
+    cycle: monthly
+    name: "Monthly Gas Usage"
+    
+  yearly_gas_usage:
+    source: sensor.duke_gas_usage_therms
+    cycle: yearly
+    name: "Yearly Gas Usage"
+    
+  monthly_electric_usage:
+    source: sensor.duke_energy_electric_usage
+    cycle: monthly
+    name: "Monthly Electric Usage"
+    
+  yearly_electric_usage:
+    source: sensor.duke_energy_electric_usage
+    cycle: yearly
+    name: "Yearly Electric Usage"

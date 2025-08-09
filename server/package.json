@@ -1,0 +1,22 @@
+{
+  "name": "duke-energy-server",
+  "version": "1.0.0",
+  "description": "Web server for Duke Energy gas and electric data",
+  "main": "src/server.ts",
+  "scripts": {
+    "start": "bun src/server.ts",
+    "dev": "bun --watch src/server.ts",
+    "docker:build": "docker build -t duke-energy-server .",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f"
+  },
+  "type": "module",
+  "dependencies": {
+    "fastify": "^4.27.0",
+    "chalk": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
