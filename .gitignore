@@ -1,0 +1,128 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.production
+.env.development
+.env.*.local
+*.key
+*.pem
+*.p12
+*.pfx
+secrets.json
+config/secrets*
+
+# Dependencies
+node_modules/
+bun.lockb
+
+# Build outputs
+dist/
+build/
+.next/
+.nuxt/
+out/
+
+# Data files (contains personal usage data)
+data/electric/*.json
+data/gas/*.json
+!data/electric/.gitkeep
+!data/gas/.gitkeep
+
+# Logs
+*.log
+logs/
+collector/daily-run.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun-debug.log*
+
+# Runtime and temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+.cache/
+.temp/
+
+# Coverage and testing
+coverage/
+.nyc_output/
+test-results/
+*.lcov
+
+# IDE and editor files
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Task Scheduler logs
+TaskScheduler.log
+scheduler-*.log
+
+# Home Assistant secrets (if any)
+home-assistant/secrets.yaml
+home-assistant/*.db
+
+# Package manager files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# TypeScript
+*.tsbuildinfo
+
+# ESLint
+.eslintcache
+
+# Optional npm cache directory
+.npm
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# parcel-bundler cache (https://parceljs.org/)
+.parcel-cache
+
+# Stores VSCode versions used for testing VSCode extensions
+.vscode-test
+
+# Local development overrides
+local.json
+local.yaml
+local.yml
