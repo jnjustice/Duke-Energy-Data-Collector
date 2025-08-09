@@ -29,6 +29,7 @@ duke-energy-project/
 │   └── gas/                # Gas usage data
 └── home-assistant/         # HA configuration examples
     └── configuration.yaml  # Sample HA config
+    └── automation.yaml     # Sample HA automation
 ```
 
 ## Prerequisites
@@ -202,7 +203,11 @@ entities:
     name: "Gas Cost Today"
 ```
 
-### 3. Historical Data Integration
+### 3. Create Automation
+
+Go to home-assistant/automation.yaml and set up your daily automation to run after the Windows Task Scheduler fetches new data
+
+### 4. Historical Data Integration
 
 For historical data and trends, use the history endpoints:
 
