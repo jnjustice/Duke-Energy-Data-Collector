@@ -1,4 +1,4 @@
-﻿import chalk from "chalk";
+import chalk from "chalk";
 import { XMLParser } from "fast-xml-parser";
 import puppeteer, {Browser} from "puppeteer";
 import fs from "fs";
@@ -158,34 +158,34 @@ export class Duke {
 			return;
 		}
 
-		// Latest reading - FIX: Write to data directory
+		// Latest reading
 		const latest = historical_data[historical_data.length - 1];
 		fs.writeFileSync(`../data/${prefix}/duke-${prefix}-latest.json`, JSON.stringify(latest, null, 2));
 
-		// Recent data (last 30 days) - FIX: Write to data directory
+		// Recent data (last 30 days)
 		const thirty_days_ago = new Date();
 		thirty_days_ago.setDate(thirty_days_ago.getDate() - 30);
 		const recent_data = historical_data.filter(record => new Date(record.date) >= thirty_days_ago);
 		fs.writeFileSync(`../data/${prefix}/duke-${prefix}-recent.json`, JSON.stringify(recent_data, null, 2));
 
-		// Monthly summaries - FIX: Write to data directory
+		// Monthly summaries
 		const monthly_summary = this.createMonthlySummary(historical_data, serviceType);
 		fs.writeFileSync(`../data/${prefix}/duke-${prefix}-monthly.json`, JSON.stringify(monthly_summary, null, 2));
 
-		// Energy stats - FIX: Write to data directory
+		// Energy stats
 		const energy_stats = historical_data.map(record => {
 			if (serviceType === 'GAS') {
 				return {
 					date: record.date,
 					ccf: record.usage_ccf,
 					therms: record.usage_therms,
-					cost_estimate: parseFloat((record.usage_ccf * 0.5685).toFixed(2)) // Your actual gas rate
+					cost_estimate: parseFloat((record.usage_ccf * 0.5685).toFixed(2))
 				};
 			} else {
 				return {
 					date: record.date,
 					kwh: record.usage_kwh,
-					cost_estimate: parseFloat((record.usage_kwh * 0.0929).toFixed(2)) // Your actual electric rate
+					cost_estimate: parseFloat((record.usage_kwh * 0.0929).toFixed(2))
 				};
 			}
 		});
@@ -257,7 +257,7 @@ export class Duke {
 	async init(): Promise<void> {
 		console.log(chalk.blue("Initializing browser..."));
 		this.browser = await puppeteer.launch({
-			headless: true, // Run headless for scheduled tasks
+			headless: true,
 			defaultViewport: { width: 1920, height: 1080 },
 			args: ["--no-sandbox", "--disable-setuid-sandbox"],
 		});
@@ -265,34 +265,333 @@ export class Duke {
 	}
 
 	async login(): Promise<void> {
-		console.log(chalk.blue("Starting login process..."));
+		console.log(chalk.blue("Starting Auth0 login process..."));
 		const page = await this.browser!.newPage();
-		await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0');
+		await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 		
 		try {
-			console.log(chalk.blue("Navigating to Duke Energy login page..."));
-			await page.goto("https://www.duke-energy.com/my-account/sign-in", { timeout: 60000 });
+			// ============================================================
+			// STEP 1: Navigate to Duke Energy homepage and click Sign In button
+			// ============================================================
+			console.log(chalk.blue("Step 1: Navigating to Duke Energy homepage..."));
+			await page.goto("https://www.duke-energy.com/home", { 
+				waitUntil: 'domcontentloaded',
+				timeout: 60000 
+			});
 			
-			console.log(chalk.blue("Waiting for email input field..."));
-			await page.waitForSelector("#Split-Sign-In-signInUsername_tealeaf-unmask", { timeout: 30000 });
+			await sleep(2000);
+			console.log(chalk.green(`Loaded homepage: ${page.url()}`));
 			
-			console.log(chalk.blue("Typing email..."));
-			await page.type("#Split-Sign-In-signInUsername_tealeaf-unmask", process.env.EMAIL!);
+			// ============================================================
+			// STEP 2: Click "Sign in / Register" button
+			// ============================================================
+			console.log(chalk.blue("Step 2: Clicking 'Sign in / Register' button..."));
 			
-			console.log(chalk.blue("Waiting for password input field..."));
-			await page.waitForSelector("#Split-Sign-In-signInPassword", { timeout: 10000 });
+			// Try multiple selectors for the sign in button
+			const signInSelectors = [
+				'a[href*="sign-in"]',
+				'a:has-text("Sign in")',
+				'button:has-text("Sign in")',
+				'a:has-text("Register")',
+				'.signin-link',
+				'[data-testid="sign-in"]'
+			];
 			
-			console.log(chalk.blue("Typing password..."));
-			await page.type("#Split-Sign-In-signInPassword", process.env.PASSWORD!);
+			let signInButton = null;
 			
-			console.log(chalk.blue("Clicking submit button..."));
-			await page.click("button[type=submit]");
+			// First try CSS selectors
+			for (const selector of signInSelectors) {
+				try {
+					await page.waitForSelector(selector, { timeout: 3000 });
+					signInButton = selector;
+					console.log(chalk.green(`Found sign-in button: ${selector}`));
+					break;
+				} catch (e) {
+					// Try next
+				}
+			}
 			
-			console.log(chalk.blue("Waiting for navigation after login..."));
-			await page.waitForNavigation({ timeout: 60000 });
+			// If CSS didn't work, try finding by text content
+			if (!signInButton) {
+				console.log(chalk.yellow("Trying to find Sign in button by text..."));
+				const buttonFound = await page.evaluate(() => {
+					const elements = Array.from(document.querySelectorAll('a, button'));
+					const signInElement = elements.find(el => {
+						const text = el.textContent?.toLowerCase() || '';
+						return text.includes('sign in') || text.includes('register');
+					});
+					
+					if (signInElement) {
+						// Add a data attribute so we can find it later
+						(signInElement as HTMLElement).setAttribute('data-found-signin', 'true');
+						return true;
+					}
+					return false;
+				});
+				
+				if (buttonFound) {
+					signInButton = '[data-found-signin="true"]';
+					console.log(chalk.green("Found sign-in button by text content"));
+				}
+			}
 			
-			console.log(chalk.green("Login completed successfully!"));
-			console.log(chalk.green(`Current URL: ${page.url()}`));
+			if (!signInButton) {
+				throw new Error("Could not find Sign in / Register button");
+			}
+			
+			// Click the sign-in button
+			console.log(chalk.blue("Clicking sign-in button..."));
+			
+			const navigationPromise = page.waitForNavigation({ 
+				timeout: 30000, 
+				waitUntil: 'domcontentloaded' 
+			}).catch(e => {
+				console.log(chalk.yellow("Navigation wait timed out, checking current URL..."));
+				return null;
+			});
+			
+			await page.evaluate((selector) => {
+				const element = document.querySelector(selector);
+				if (element) {
+					element.click();
+				}
+			}, signInButton);
+			
+			console.log(chalk.yellow("Waiting for redirect to login.duke-energy.com..."));
+			await navigationPromise;
+			await sleep(2000);
+			
+			const currentUrl = page.url();
+			console.log(chalk.green(`Current URL after click: ${currentUrl}`));
+			
+			if (!currentUrl.includes('login.duke-energy.com')) {
+				console.log(chalk.yellow("Attempting to wait longer for redirect..."));
+				await sleep(5000);
+				const finalUrl = page.url();
+				console.log(chalk.green(`URL after additional wait: ${finalUrl}`));
+				if (!finalUrl.includes('login.duke-energy.com')) {
+					throw new Error("Failed to navigate to Auth0 login page");
+				}
+			}
+			
+			// ============================================================
+			// STEP 3: Enter email/username
+			// ============================================================
+			console.log(chalk.blue("Step 3: Waiting for Auth0 login form to appear..."));
+			
+			const emailSelectors = [
+				'input[type="email"]',
+				'input[name="username"]',
+				'input[name="email"]',
+				'input[id="username"]',
+				'input[id="email"]',
+				'input[placeholder*="email" i]',
+				'input[placeholder*="username" i]'
+			];
+			
+			let emailInput = null;
+			console.log(chalk.yellow("Searching for email input field (may take up to 30s)..."));
+			
+			for (const selector of emailSelectors) {
+				try {
+					await page.waitForSelector(selector, { timeout: 30000 });
+					emailInput = selector;
+					console.log(chalk.green(`Found email field: ${selector}`));
+					break;
+				} catch (e) {
+					// Try next
+				}
+			}
+			
+			if (!emailInput) {
+				throw new Error("Could not find email/username input field");
+			}
+			
+			console.log(chalk.blue("Entering email address..."));
+			await page.type(emailInput, process.env.EMAIL!, { delay: 50 });
+			await sleep(500);
+			
+			// ============================================================
+			// STEP 4: Click Continue to get to password page
+			// ============================================================
+			console.log(chalk.blue("Step 4: Looking for Continue/Next button..."));
+			
+			const continueSelectors = [
+				'button[type="submit"]',
+				'input[type="submit"]',
+				'button[name="action"]',
+				'button:has-text("Continue")',
+				'button:has-text("Next")'
+			];
+			
+			let continueButton = null;
+			for (const selector of continueSelectors) {
+				try {
+					await page.waitForSelector(selector, { timeout: 2000 });
+					continueButton = selector;
+					console.log(chalk.green(`Found continue button: ${selector}`));
+					break;
+				} catch (e) {
+					// Try next
+				}
+			}
+			
+			if (!continueButton) {
+				const buttonFound = await page.evaluate(() => {
+					const buttons = Array.from(document.querySelectorAll('button'));
+					const btn = buttons.find(b => {
+						const text = b.textContent?.toLowerCase() || '';
+						return text.includes('continue') || text.includes('next') || b.type === 'submit';
+					});
+					if (btn) {
+						btn.setAttribute('data-found-continue', 'true');
+						return true;
+					}
+					return false;
+				});
+				
+				if (buttonFound) {
+					continueButton = '[data-found-continue="true"]';
+					console.log(chalk.green("Found continue button by text"));
+				}
+			}
+			
+			if (!continueButton) {
+				throw new Error("Could not find Continue/Next button");
+			}
+			
+			console.log(chalk.blue("Clicking Continue button..."));
+			
+			const continueNavigationPromise = page.waitForNavigation({ 
+				timeout: 30000, 
+				waitUntil: 'domcontentloaded' 
+			}).catch(e => {
+				console.log(chalk.yellow("Navigation wait timed out for Continue, checking URL..."));
+				return null;
+			});
+			
+			await page.evaluate((selector) => {
+				const element = document.querySelector(selector);
+				if (element) {
+					element.click();
+				}
+			}, continueButton);
+			
+			await continueNavigationPromise;
+			await sleep(2000);
+			console.log(chalk.green(`After Continue: ${page.url()}`));
+			
+			// ============================================================
+			// STEP 5: Enter password
+			// ============================================================
+			console.log(chalk.blue("Step 5: Looking for password field..."));
+			
+			const passwordSelectors = [
+				'input[type="password"]',
+				'input[name="password"]',
+				'input[id="password"]'
+			];
+			
+			let passwordInput = null;
+			for (const selector of passwordSelectors) {
+				try {
+					await page.waitForSelector(selector, { timeout: 5000 });
+					passwordInput = selector;
+					console.log(chalk.green(`Found password field: ${selector}`));
+					break;
+				} catch (e) {
+					// Try next
+				}
+			}
+			
+			if (!passwordInput) {
+				throw new Error("Could not find password input field");
+			}
+			
+			console.log(chalk.blue("Entering password..."));
+			await page.type(passwordInput, process.env.PASSWORD!, { delay: 50 });
+			await sleep(500);
+			
+			// ============================================================
+			// STEP 6: Submit login form
+			// ============================================================
+			console.log(chalk.blue("Step 6: Looking for login submit button..."));
+			
+			const submitSelectors = [
+				'button[type="submit"]',
+				'input[type="submit"]',
+				'button[name="action"]',
+				'button:has-text("Log In")',
+				'button:has-text("Sign In")',
+				'button:has-text("Continue")'
+			];
+			
+			let submitButton = null;
+			for (const selector of submitSelectors) {
+				try {
+					await page.waitForSelector(selector, { timeout: 2000 });
+					submitButton = selector;
+					console.log(chalk.green(`Found submit button: ${selector}`));
+					break;
+				} catch (e) {
+					// Try next
+				}
+			}
+			
+			if (!submitButton) {
+				const buttonFound = await page.evaluate(() => {
+					const buttons = Array.from(document.querySelectorAll('button'));
+					const btn = buttons.find(b => {
+						const text = b.textContent?.toLowerCase() || '';
+						return text.includes('log in') || text.includes('sign in') || 
+						       text.includes('continue') || b.type === 'submit';
+					});
+					if (btn) {
+						btn.setAttribute('data-found-submit', 'true');
+						return true;
+					}
+					return false;
+				});
+				
+				if (buttonFound) {
+					submitButton = '[data-found-submit="true"]';
+					console.log(chalk.green("Found submit button by text"));
+				}
+			}
+			
+			if (!submitButton) {
+				throw new Error("Could not find submit button");
+			}
+			
+			console.log(chalk.blue("Submitting login form..."));
+			
+			const submitNavigationPromise = page.waitForNavigation({ 
+				timeout: 60000, 
+				waitUntil: 'domcontentloaded' 
+			}).catch(e => {
+				console.log(chalk.yellow("Navigation wait timed out for submit, checking URL..."));
+				return null;
+			});
+			
+			await page.evaluate((selector) => {
+				const element = document.querySelector(selector);
+				if (element) {
+					element.click();
+				}
+			}, submitButton);
+			
+			await submitNavigationPromise;
+			await sleep(3000);
+			
+			const finalUrl = page.url();
+			console.log(chalk.green(`Login completed! Current URL: ${finalUrl}`));
+			
+			if (finalUrl.includes('duke-energy.com') && !finalUrl.includes('login')) {
+				console.log(chalk.green("✅ Successfully logged in to Duke Energy!"));
+			} else {
+				console.log(chalk.yellow(`⚠️  Login may have failed. Current URL: ${finalUrl}`));
+				throw new Error("Login verification failed - unexpected URL");
+			}
 			
 		} catch (error) {
 			console.error(chalk.red("Login failed:"), error);
@@ -305,11 +604,9 @@ export class Duke {
 		
 		const api_url = "https://p-auth.duke-energy.com/form/PlanRate/GetEnergyUsage";
 		
-		// Get yesterday's date (gas data is typically 1 day behind)
 		const yesterday = new Date();
 		yesterday.setDate(yesterday.getDate() - 1);
 		
-		// Get past 30 days from yesterday
 		const thirtyDaysAgo = new Date(yesterday);
 		thirtyDaysAgo.setDate(yesterday.getDate() - 30);
 		
@@ -320,75 +617,46 @@ export class Duke {
 			return `${month}/${day}/${year}`;
 		};
 		
-		const startDate = formatDate(thirtyDaysAgo);
-		const endDate = formatDate(yesterday);
+		const start_date = formatDate(thirtyDaysAgo);
+		const end_date = formatDate(yesterday);
 		
-		console.log(chalk.blue(`Requesting gas data from ${startDate} to ${endDate}`));
+		console.log(chalk.blue(`Fetching gas data from ${start_date} to ${end_date}`));
 		
-		const req_json = {
-			request: JSON.stringify({
-				"SrcAcctId": process.env.ACCOUNTNUM,
-				"SrcAcctId2": "",
-				"SrcSysCd": "ISU",
-				"MeterSerialNumber": process.env.GAS_METERNUM?.trim(),
-				"IntervalFrequency": "dailyEnergy",
-				"Netmetering": "N",
-				"PeriodType": "Month",
-				"ServiceType": "GAS",
-				"StartDate": startDate,
-				"EndDate": endDate,
-				"Date": "",
-				"AgrmtStartDt": "",
-				"AgrmtEndDt": "",
-				"MeterCertDt": ""
-			})
+		const requestData = {
+			SrcAcctId: process.env.ACCOUNTNUM,
+			SrcAcctId2: "",
+			SrcSysCd: "ISU",
+			MeterSerialNumber: process.env.GAS_METERNUM,
+			IntervalFrequency: "dailyEnergy",
+			Netmetering: "N",
+			PeriodType: "Week",
+			ServiceType: "GAS",
+			StartDate: start_date,
+			EndDate: end_date,
+			Date: "",
+			AgrmtStartDt: "",
+			AgrmtEndDt: "",
+			MeterCertDt: ""
 		};
-
-		try {
-			const api_page = await this.browser!.newPage();
-			await api_page.setRequestInterception(true);
-			
-			api_page.once('request', request => {
-				request.continue({ 
-					method: 'POST', 
-					postData: JSON.stringify(req_json), 
-					headers: {
-						"Accept": "application/json, text/plain, */*",
-						"Content-Type": "application/json",
-						"Cookie": request.headers().Cookie
-					} 
-				});
-			});
-
-			await api_page.goto(api_url, { timeout: 60000 });
-			const api_response = await api_page.content();
-
-			// Parse JSON response
-			const jsonMatch = api_response.match(/\{.*\}/s);
-			if (!jsonMatch) {
-				throw new Error("No JSON found in gas API response");
-			}
-
-			const gas_data = JSON.parse(jsonMatch[0]);
-			console.log(chalk.green("Successfully parsed gas JSON response!"));
-			
-			// Save raw response
-			fs.writeFileSync("../data/gas/duke-gas-raw.json", JSON.stringify(gas_data, null, 2));
-			
-			// Process the data
-			const processed_data = this.processGasData(gas_data);
-			
-			// Store and export
+		
+		const payload = {
+			request: JSON.stringify(requestData)
+		};
+		
+		console.log(chalk.blue("Sending request to gas API..."));
+		
+		const response = await this.makeApiRequest(api_url, payload);
+		
+		console.log(chalk.green("Received gas API response"));
+		
+		const processed_data = this.processGasData(response);
+		
+		if (processed_data.length > 0) {
 			this.storeUsageData(processed_data, 'GAS');
 			this.exportForHomeAssistant('GAS');
-			
-			console.log(chalk.green(`Successfully processed ${processed_data.length} days of gas usage data`));
-			return processed_data;
-			
-		} catch (error) {
-			console.error(chalk.red("Error in gas API:"), error);
-			throw error;
 		}
+		
+		return processed_data;
 	}
 
 	async read_electric_api(): Promise<any> {
@@ -396,13 +664,11 @@ export class Duke {
 		
 		const api_url = "https://p-auth.duke-energy.com/form/PlanRate/GetEnergyUsage";
 		
-		// Get yesterday's data (electric data is also typically 1 day behind)
 		const yesterday = new Date();
 		yesterday.setDate(yesterday.getDate() - 1);
 		
-		// Get past 7 days from yesterday for electric data
-		const sevenDaysAgo = new Date(yesterday);
-		sevenDaysAgo.setDate(yesterday.getDate() - 7);
+		const thirtyDaysAgo = new Date(yesterday);
+		thirtyDaysAgo.setDate(yesterday.getDate() - 30);
 		
 		const formatDate = (date: Date) => {
 			const month = (date.getMonth() + 1).toString().padStart(2, '0');
@@ -411,119 +677,130 @@ export class Duke {
 			return `${month}/${day}/${year}`;
 		};
 		
-		const startDate = formatDate(sevenDaysAgo);
-		const endDate = formatDate(yesterday);
+		const start_date = formatDate(thirtyDaysAgo);
+		const end_date = formatDate(yesterday);
 		
-		console.log(chalk.blue(`Requesting electric data from ${startDate} to ${endDate}`));
+		console.log(chalk.blue(`Fetching electric data from ${start_date} to ${end_date}`));
 		
-		const req_json = {
-			request: JSON.stringify({
-				"SrcAcctId": process.env.ACCOUNTNUM,
-				"SrcAcctId2": "",
-				"SrcSysCd": "ISU",
-				"MeterSerialNumber": process.env.ELECTRIC_METERNUM?.trim(),
-				"IntervalFrequency": "dailyEnergy", // Get daily totals instead of 15-minute intervals
-				"Netmetering": "N",
-				"PeriodType": "Week",
-				"ServiceType": "ELECTRIC",
-				"StartDate": startDate,
-				"EndDate": endDate,
-				"Date": "",
-				"AgrmtStartDt": "",
-				"AgrmtEndDt": "",
-				"MeterCertDt": ""
-			})
+		const requestData = {
+			SrcAcctId: process.env.ACCOUNTNUM,
+			SrcAcctId2: "",
+			SrcSysCd: "ISU",
+			MeterSerialNumber: process.env.ELECTRIC_METERNUM,
+			IntervalFrequency: "dailyEnergy",
+			Netmetering: "N",
+			PeriodType: "Week",
+			ServiceType: "ELECTRIC",
+			StartDate: start_date,
+			EndDate: end_date,
+			Date: "",
+			AgrmtStartDt: "",
+			AgrmtEndDt: "",
+			MeterCertDt: ""
 		};
+		
+		const payload = {
+			request: JSON.stringify(requestData)
+		};
+		
+		console.log(chalk.blue("Sending request to electric API..."));
+		
+		const response = await this.makeApiRequest(api_url, payload);
+		
+		console.log(chalk.green("Received electric API response"));
+		
+		const processed_data = this.processElectricData(response);
+		
+		if (processed_data.length > 0) {
+			this.storeUsageData(processed_data, 'ELECTRIC');
+			this.exportForHomeAssistant('ELECTRIC');
+		}
+		
+		return processed_data;
+	}
 
+	// FIX: Navigate to authenticated page first, THEN make the fetch request
+	async makeApiRequest(url: string, payload: any): Promise<any> {
+		console.log(chalk.blue("Making API request from browser context..."));
+		
 		try {
-			const api_page = await this.browser!.newPage();
-			await api_page.setRequestInterception(true);
+			// Create a new page that will inherit cookies from the browser
+			const apiPage = await this.browser!.newPage();
 			
-			api_page.once('request', request => {
-				request.continue({ 
-					method: 'POST', 
-					postData: JSON.stringify(req_json), 
-					headers: {
-						"Accept": "application/json, text/plain, */*",
-						"Content-Type": "application/json",
-						"Cookie": request.headers().Cookie
-					} 
-				});
+			// CRITICAL FIX: Navigate to the authenticated Duke Energy domain FIRST
+			// This ensures the page has the session cookies loaded before we make the fetch
+			console.log(chalk.yellow("Navigating to authenticated domain to load session cookies..."));
+			await apiPage.goto('https://p-auth.duke-energy.com/my-account/energy-usage', { 
+				waitUntil: 'domcontentloaded',
+				timeout: 30000 
 			});
-
-			await api_page.goto(api_url, { timeout: 60000 });
-			const api_response = await api_page.content();
-
-			// Try JSON first (like gas data)
-			let electric_data;
-			const jsonMatch = api_response.match(/\{.*\}/s);
-			if (jsonMatch) {
+			
+			await sleep(1000); // Give it a moment to settle
+			
+			// Now that we're on the authenticated domain with cookies, make the API request
+			console.log(chalk.blue("Making fetch request with session cookies..."));
+			const result = await apiPage.evaluate(async (apiUrl, data) => {
 				try {
-					electric_data = JSON.parse(jsonMatch[0]);
-					console.log(chalk.green("Successfully parsed electric JSON response!"));
+					const response = await fetch(apiUrl, {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'Accept': 'application/json, text/plain, */*'
+						},
+						credentials: 'include', // This will now include the cookies from the current domain
+						body: JSON.stringify(data)
+					});
 					
-					// Save raw response
-					fs.writeFileSync("../data/electric/duke-electric-raw.json", JSON.stringify(electric_data, null, 2));
+					if (!response.ok) {
+						const text = await response.text();
+						return {
+							error: true,
+							status: response.status,
+							statusText: response.statusText,
+							body: text
+						};
+					}
 					
-					// Process as JSON (similar to gas data)
-					const processed_data = this.processElectricJsonData(electric_data);
-					
-					// Store and export
-					this.storeUsageData(processed_data, 'ELECTRIC');
-					this.exportForHomeAssistant('ELECTRIC');
-					
-					console.log(chalk.green(`Successfully processed ${processed_data.length} days of electric usage data`));
-					return processed_data;
-					
-				} catch (jsonError) {
-					console.log(chalk.yellow("JSON parsing failed, trying XML..."));
+					const responseJson = await response.json();
+					return {
+						error: false,
+						data: responseJson
+					};
+				} catch (e: any) {
+					return {
+						error: true,
+						message: e.message,
+						stack: e.stack
+					};
 				}
+			}, url, payload);
+			
+			// Close the API page
+			await apiPage.close();
+			
+			if (result.error) {
+				console.error(chalk.red("API Error Details:"), {
+					status: result.status,
+					statusText: result.statusText,
+					message: result.message,
+					body: result.body?.substring(0, 200)
+				});
+				throw new Error(`API request failed: ${result.statusText || result.message} (Status: ${result.status || 'unknown'})`);
 			}
 			
-			// Fallback to XML parsing (original method)
-			console.log(chalk.blue("Parsing as XML..."));
-			const parser = new XMLParser();
-			const parsed_xml = parser.parse(api_response);
-			
-			const raw_data = parsed_xml["html"]["body"]["ns3:entry"]["ns3:link"]["ns3:content"];
-			const data = raw_data["espi:intervalblock"];
-			const reading_interval = data["espi:interval"]["espi:secondsperinterval"];
-			const readings = data["espi:intervalreading"].map((reading: any) => {
-				if (reading["espi:readingquality"] != "ACTUAL") {
-					return undefined;
-				}
-				return {
-					time: reading["espi:timeperiod"]["espi:start"],
-					value: reading["espi:value"]
-				};
-			}).filter((x: any) => x !== undefined);
-			
-			console.log(chalk.green(`Successfully parsed electric XML data! ${readings.length} readings`));
-			
-			// Save raw response
-			fs.writeFileSync("../data/electric/duke-electric-raw.json", JSON.stringify(raw_data, null, 2));
-			
-			// Group readings by day and sum them
-			const dailyData = this.groupElectricReadingsByDay(readings, reading_interval);
-			
-			// Store and export
-			this.storeUsageData(dailyData, 'ELECTRIC');
-			this.exportForHomeAssistant('ELECTRIC');
-			
-			console.log(chalk.green(`Successfully processed ${dailyData.length} days of electric usage data`));
-			return dailyData;
+			console.log(chalk.green("API request successful"));
+			return result.data;
 			
 		} catch (error) {
-			console.error(chalk.red("Error in electric API:"), error);
+			console.error(chalk.red("API request failed:"), error);
 			throw error;
 		}
 	}
 
-	// Process electric data when it comes back as JSON (like gas data)
-	processElectricJsonData(raw_data: any): any[] {
+	processElectricData(raw_data: any): any[] {
 		try {
 			if (!raw_data.Series1 || !raw_data.TickSeries) {
-				console.log(chalk.yellow("No electric usage data found in JSON response"));
+				console.log(chalk.yellow("No electric usage data found in response"));
 				return [];
 			}
 
@@ -537,7 +814,12 @@ export class Duke {
 				const usage = parseFloat(usage_values[i]);
 				const date_label = date_labels[i];
 				
-				// Parse the date (M/DD format)
+				// Skip zero values (missing data)
+				if (usage === 0.0) {
+					console.log(chalk.yellow(`Skipping zero value for ${date_label}`));
+					continue;
+				}
+				
 				let full_date;
 				try {
 					if (date_label && date_label.includes('/')) {
@@ -564,7 +846,6 @@ export class Duke {
 				});
 			}
 			
-			// Sort by date
 			processed_data.sort((a, b) => new Date(a.full_date).getTime() - new Date(b.full_date).getTime());
 			
 			console.log(chalk.green(`Processed ${processed_data.length} days of electric usage`));
@@ -580,36 +861,6 @@ export class Duke {
 			console.error(chalk.red("Error processing electric JSON data:"), error);
 			return [];
 		}
-	}
-
-	// Group electric readings by day (for XML interval data)
-	groupElectricReadingsByDay(readings: any[], reading_interval: number): any[] {
-		const dailyTotals: { [key: string]: { total: number, date: Date } } = {};
-		
-		for (const reading of readings) {
-			const date = new Date(reading.time * 1000);
-			const dateKey = date.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
-			
-			if (!dailyTotals[dateKey]) {
-				dailyTotals[dateKey] = { total: 0, date: date };
-			}
-			
-			// Convert Wh to kWh (readings are typically in Wh)
-			const kwh = parseFloat(reading.value) / 1000;
-			dailyTotals[dateKey].total += kwh;
-		}
-		
-		// Convert to array format
-		return Object.keys(dailyTotals).map(dateKey => {
-			const dayData = dailyTotals[dateKey];
-			return {
-				date: dateKey,
-				full_date: dateKey,
-				usage_kwh: parseFloat(dayData.total.toFixed(3)),
-				unit: "kWh",
-				timestamp: new Date().toISOString()
-			};
-		}).sort((a, b) => new Date(a.full_date).getTime() - new Date(b.full_date).getTime());
 	}
 
 	processGasData(raw_data: any): any[] {
@@ -631,7 +882,12 @@ export class Duke {
 				const average = average_values && average_values[i] ? parseFloat(average_values[i]) : null;
 				const date_label = date_labels[i];
 				
-				// Parse the date (M/DD format)
+				// Skip zero values (missing data)
+				if (usage === 0.0) {
+					console.log(chalk.yellow(`Skipping zero value for ${date_label}`));
+					continue;
+				}
+				
 				let full_date;
 				try {
 					if (date_label && date_label.includes('/')) {
@@ -659,7 +915,6 @@ export class Duke {
 				});
 			}
 			
-			// Sort by date
 			processed_data.sort((a, b) => new Date(a.full_date).getTime() - new Date(b.full_date).getTime());
 			
 			console.log(chalk.green(`Processed ${processed_data.length} days of gas usage`));
@@ -692,65 +947,61 @@ export class Duke {
 				electric: { success: false, error: null as any, data_points: 0 }
 			};
 			
-			// Fetch gas data if configured
 			if (process.env.GAS_METERNUM) {
 				try {
 					console.log(chalk.blue("--- Fetching Gas Data ---"));
 					const gas_data = await this.read_gas_api();
 					results.gas.success = true;
 					results.gas.data_points = gas_data.length;
-					console.log(chalk.green(`âœ… Gas data collection completed: ${gas_data.length} records`));
+					console.log(chalk.green(`✅ Gas data collection completed: ${gas_data.length} records`));
 				} catch (error) {
 					results.gas.error = error;
-					console.error(chalk.red("âŒ Failed to fetch gas data:"), error);
+					console.error(chalk.red("❌ Failed to fetch gas data:"), error);
 				}
 			} else {
-				console.log(chalk.yellow("â­ï¸  Gas meter not configured, skipping gas data collection"));
+				console.log(chalk.yellow("⭐️ Gas meter not configured, skipping gas data collection"));
 			}
 			
-			// Fetch electric data if configured
 			if (process.env.ELECTRIC_METERNUM) {
 				try {
 					console.log(chalk.blue("--- Fetching Electric Data ---"));
 					const electric_data = await this.read_electric_api();
 					results.electric.success = true;
 					results.electric.data_points = electric_data.length;
-					console.log(chalk.green(`âœ… Electric data collection completed: ${electric_data.length} records`));
+					console.log(chalk.green(`✅ Electric data collection completed: ${electric_data.length} records`));
 				} catch (error) {
 					results.electric.error = error;
-					console.error(chalk.red("âŒ Failed to fetch electric data:"), error);
+					console.error(chalk.red("❌ Failed to fetch electric data:"), error);
 				}
 			} else {
-				console.log(chalk.yellow("â­ï¸  Electric meter not configured, skipping electric data collection"));
+				console.log(chalk.yellow("⭐️ Electric meter not configured, skipping electric data collection"));
 			}
 			
-			// Summary
 			console.log(chalk.blue("=== Collection Summary ==="));
 			if (process.env.GAS_METERNUM) {
 				if (results.gas.success) {
-					console.log(chalk.green(`Gas: âœ… Success (${results.gas.data_points} records)`));
+					console.log(chalk.green(`Gas: ✅ Success (${results.gas.data_points} records)`));
 				} else {
-					console.log(chalk.red(`Gas: âŒ Failed - ${results.gas.error?.message || 'Unknown error'}`));
+					console.log(chalk.red(`Gas: ❌ Failed - ${results.gas.error?.message || 'Unknown error'}`));
 				}
 			}
 			
 			if (process.env.ELECTRIC_METERNUM) {
 				if (results.electric.success) {
-					console.log(chalk.green(`Electric: âœ… Success (${results.electric.data_points} records)`));
+					console.log(chalk.green(`Electric: ✅ Success (${results.electric.data_points} records)`));
 				} else {
-					console.log(chalk.red(`Electric: âŒ Failed - ${results.electric.error?.message || 'Unknown error'}`));
+					console.log(chalk.red(`Electric: ❌ Failed - ${results.electric.error?.message || 'Unknown error'}`));
 				}
 			}
 			
-			// Exit with appropriate code
 			const anySuccess = results.gas.success || results.electric.success;
 			if (!anySuccess) {
-				console.log(chalk.red("âŒ All data collection attempts failed"));
+				console.log(chalk.red("❌ All data collection attempts failed"));
 				process.exit(1);
 			}
 			
 		} catch (error) {
-			console.error(chalk.red("âŒ Critical error in fetch_once:"), error);
+			console.error(chalk.red("❌ Critical error in fetch_once:"), error);
 			process.exit(1);
 		} finally {
 			if (this.browser) {
@@ -765,8 +1016,4 @@ export class Duke {
 			process.exit(0);
 		}
 	}
-
-	// Remove the monitor method since we're running daily
-	// monitor method removed for scheduled execution
 }
-
