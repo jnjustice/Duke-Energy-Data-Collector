@@ -2,10 +2,10 @@
 $ErrorActionPreference = "Continue"  # Changed from "Stop" to see more output
 
 # Change to the collector directory
-Set-Location "C:\Users\joshu\Documents\scripts\duke-energy-project\collector"
+Set-Location $PSScriptRoot
 
 # Log file for troubleshooting
-$LogFile = "C:\Users\joshu\Documents\scripts\duke-energy-project\collector\daily-run.log"
+$LogFile = Join-Path $PSScriptRoot "daily-run.log"
 $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
 try {
@@ -52,4 +52,5 @@ try {
     "[$ErrorTime] SCRIPT ERROR: $($_.Exception.Message)" | Out-File $LogFile -Append
     "[$ErrorTime] Full error: $($_)" | Out-File $LogFile -Append
     exit 1
+
 }
