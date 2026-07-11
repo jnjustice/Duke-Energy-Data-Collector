@@ -1,7 +1,16 @@
 import chalk from "chalk";
 import { XMLParser } from "fast-xml-parser";
-import puppeteer, {Browser} from "puppeteer";
+import { Browser, Page } from "puppeteer";
+// puppeteer-extra + stealth plugin patch the common headless-Chrome tells
+// (navigator.webdriver, missing chrome runtime, permissions API quirks, etc.)
+// that bot-detection services like Akamai Bot Manager key off of. Plain
+// puppeteer with a spoofed User-Agent is not enough - the underlying page
+// still self-reports as automated to any JS-level fingerprinting.
+import puppeteerExtra from "puppeteer-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import fs from "fs";
+
+puppeteerExtra.use(StealthPlugin());
 
 function sleep(ms: number) {
 	return new Promise((resolve) => {
@@ -11,6 +20,9 @@ function sleep(ms: number) {
 
 export class Duke {
 	browser: Browser | undefined;
+	apiPage: Page | undefined;
+	altAcctId: string | undefined;
+	meterMap: Record<string, { full: string; short: string }> | undefined;
 	refresh_interval_min = 15;
 	db_store: ((raw_data: any) => Promise<any>) | undefined;
 	gas_history_file = '../data/gas/duke-gas-history.json';
@@ -256,11 +268,15 @@ export class Duke {
 
 	async init(): Promise<void> {
 		console.log(chalk.blue("Initializing browser..."));
-		this.browser = await puppeteer.launch({
+		this.browser = await puppeteerExtra.launch({
 			headless: true,
 			defaultViewport: { width: 1920, height: 1080 },
-			args: ["--no-sandbox", "--disable-setuid-sandbox"],
-		});
+			args: [
+				"--no-sandbox",
+				"--disable-setuid-sandbox",
+				"--disable-blink-features=AutomationControlled"
+			],
+		}) as unknown as Browser;
 		console.log(chalk.green("Browser initialized successfully!"));
 	}
 
@@ -601,200 +617,209 @@ export class Duke {
 
 	async read_gas_api(): Promise<any> {
 		console.log(chalk.blue("Starting GAS API data retrieval..."));
-		
-		const api_url = "https://p-auth.duke-energy.com/form/PlanRate/GetEnergyUsage";
-		
+
 		const yesterday = new Date();
 		yesterday.setDate(yesterday.getDate() - 1);
-		
+
 		const thirtyDaysAgo = new Date(yesterday);
 		thirtyDaysAgo.setDate(yesterday.getDate() - 30);
-		
-		const formatDate = (date: Date) => {
-			const month = (date.getMonth() + 1).toString().padStart(2, '0');
-			const day = date.getDate().toString().padStart(2, '0');
-			const year = date.getFullYear();
-			return `${month}/${day}/${year}`;
-		};
-		
-		const start_date = formatDate(thirtyDaysAgo);
-		const end_date = formatDate(yesterday);
-		
-		console.log(chalk.blue(`Fetching gas data from ${start_date} to ${end_date}`));
-		
-		const requestData = {
-			SrcAcctId: process.env.ACCOUNTNUM,
-			SrcAcctId2: "",
-			SrcSysCd: "ISU",
-			MeterSerialNumber: process.env.GAS_METERNUM,
-			IntervalFrequency: "dailyEnergy",
-			Netmetering: "N",
-			PeriodType: "Week",
-			ServiceType: "GAS",
-			StartDate: start_date,
-			EndDate: end_date,
-			Date: "",
-			AgrmtStartDt: "",
-			AgrmtEndDt: "",
-			MeterCertDt: ""
-		};
-		
-		const payload = {
-			request: JSON.stringify(requestData)
-		};
-		
-		console.log(chalk.blue("Sending request to gas API..."));
-		
-		const response = await this.makeApiRequest(api_url, payload);
-		
+
+		console.log(chalk.blue(`Fetching gas data from ${this.formatSlashDate(thirtyDaysAgo)} to ${this.formatSlashDate(yesterday)}`));
+
+		const response = await this.fetchMeterUsageRange(
+			'GAS',
+			thirtyDaysAgo,
+			yesterday
+		);
+
 		console.log(chalk.green("Received gas API response"));
-		
+
 		const processed_data = this.processGasData(response);
-		
+
 		if (processed_data.length > 0) {
 			this.storeUsageData(processed_data, 'GAS');
 			this.exportForHomeAssistant('GAS');
 		}
-		
+
 		return processed_data;
 	}
 
 	async read_electric_api(): Promise<any> {
 		console.log(chalk.blue("Starting ELECTRIC API data retrieval..."));
-		
-		const api_url = "https://p-auth.duke-energy.com/form/PlanRate/GetEnergyUsage";
-		
+
 		const yesterday = new Date();
 		yesterday.setDate(yesterday.getDate() - 1);
-		
+
 		const thirtyDaysAgo = new Date(yesterday);
 		thirtyDaysAgo.setDate(yesterday.getDate() - 30);
-		
-		const formatDate = (date: Date) => {
-			const month = (date.getMonth() + 1).toString().padStart(2, '0');
-			const day = date.getDate().toString().padStart(2, '0');
-			const year = date.getFullYear();
-			return `${month}/${day}/${year}`;
-		};
-		
-		const start_date = formatDate(thirtyDaysAgo);
-		const end_date = formatDate(yesterday);
-		
-		console.log(chalk.blue(`Fetching electric data from ${start_date} to ${end_date}`));
-		
-		const requestData = {
-			SrcAcctId: process.env.ACCOUNTNUM,
-			SrcAcctId2: "",
-			SrcSysCd: "ISU",
-			MeterSerialNumber: process.env.ELECTRIC_METERNUM,
-			IntervalFrequency: "dailyEnergy",
-			Netmetering: "N",
-			PeriodType: "Week",
-			ServiceType: "ELECTRIC",
-			StartDate: start_date,
-			EndDate: end_date,
-			Date: "",
-			AgrmtStartDt: "",
-			AgrmtEndDt: "",
-			MeterCertDt: ""
-		};
-		
-		const payload = {
-			request: JSON.stringify(requestData)
-		};
-		
-		console.log(chalk.blue("Sending request to electric API..."));
-		
-		const response = await this.makeApiRequest(api_url, payload);
-		
+
+		console.log(chalk.blue(`Fetching electric data from ${this.formatSlashDate(thirtyDaysAgo)} to ${this.formatSlashDate(yesterday)}`));
+
+		const response = await this.fetchMeterUsageRange(
+			'ELEC',
+			thirtyDaysAgo,
+			yesterday
+		);
+
 		console.log(chalk.green("Received electric API response"));
-		
+
 		const processed_data = this.processElectricData(response);
-		
+
 		if (processed_data.length > 0) {
 			this.storeUsageData(processed_data, 'ELECTRIC');
 			this.exportForHomeAssistant('ELECTRIC');
 		}
-		
+
 		return processed_data;
 	}
 
-	// FIX: Navigate to authenticated page first, THEN make the fetch request
-	async makeApiRequest(url: string, payload: any): Promise<any> {
-		console.log(chalk.blue("Making API request from browser context..."));
-		
-		try {
-			// Create a new page that will inherit cookies from the browser
-			const apiPage = await this.browser!.newPage();
-			
-			// CRITICAL FIX: Navigate to the authenticated Duke Energy domain FIRST
-			// This ensures the page has the session cookies loaded before we make the fetch
-			console.log(chalk.yellow("Navigating to authenticated domain to load session cookies..."));
-			await apiPage.goto('https://p-auth.duke-energy.com/my-account/energy-usage', { 
-				waitUntil: 'domcontentloaded',
-				timeout: 30000 
-			});
-			
-			await sleep(1000); // Give it a moment to settle
-			
-			// Now that we're on the authenticated domain with cookies, make the API request
-			console.log(chalk.blue("Making fetch request with session cookies..."));
-			const result = await apiPage.evaluate(async (apiUrl, data) => {
+	formatSlashDate(date: Date): string {
+		const month = (date.getMonth() + 1).toString().padStart(2, '0');
+		const day = date.getDate().toString().padStart(2, '0');
+		const year = date.getFullYear();
+		return `${month}/${day}/${year}`;
+	}
+
+	formatIsoDate(date: Date): string {
+		const month = (date.getMonth() + 1).toString().padStart(2, '0');
+		const day = date.getDate().toString().padStart(2, '0');
+		const year = date.getFullYear();
+		return `${year}-${month}-${day}`;
+	}
+
+	// Waits for the next response matching an exact pathname + HTTP method and
+	// returns its parsed JSON body. Used to capture data from requests the
+	// SPA's own JS fires - we never construct these requests ourselves, so
+	// whatever auth mechanism the page actually uses just works.
+	//
+	// NOTE: exact pathname match matters here - a naive substring match on
+	// "/cdxp/api/auth/usage/meter" also matches "/cdxp/api/auth/usage/meter-details"
+	// (fired on every full page reload), which was silently swallowing the
+	// real usage response.
+	waitForApiResponse(page: Page, pathname: string, method: 'GET' | 'POST' = 'GET', timeoutMs = 30000): Promise<any> {
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				page.off('response', handler);
+				reject(new Error(`Timed out waiting for a ${method} response matching "${pathname}"`));
+			}, timeoutMs);
+
+			const handler = async (res: any) => {
+				let urlPath: string;
+				try { urlPath = new URL(res.url()).pathname; } catch { return; }
+				if (urlPath !== pathname || res.request().method() !== method) return;
 				try {
-					const response = await fetch(apiUrl, {
-						method: 'POST',
-						headers: {
-							'Content-Type': 'application/json',
-							'Accept': 'application/json, text/plain, */*'
-						},
-						credentials: 'include', // This will now include the cookies from the current domain
-						body: JSON.stringify(data)
-					});
-					
-					if (!response.ok) {
-						const text = await response.text();
-						return {
-							error: true,
-							status: response.status,
-							statusText: response.statusText,
-							body: text
-						};
+					const json = await res.json();
+					clearTimeout(timer);
+					page.off('response', handler);
+					if (!res.ok()) {
+						reject(new Error(`Request to ${res.url()} returned ${res.status()}: ${JSON.stringify(json).substring(0, 300)}`));
+						return;
 					}
-					
-					const responseJson = await response.json();
-					return {
-						error: false,
-						data: responseJson
-					};
-				} catch (e: any) {
-					return {
-						error: true,
-						message: e.message,
-						stack: e.stack
-					};
+					resolve(json);
+				} catch {
+					// Body wasn't JSON or wasn't ready yet - keep waiting for a later match.
 				}
-			}, url, payload);
-			
-			// Close the API page
-			await apiPage.close();
-			
-			if (result.error) {
-				console.error(chalk.red("API Error Details:"), {
-					status: result.status,
-					statusText: result.statusText,
-					message: result.message,
-					body: result.body?.substring(0, 200)
-				});
-				throw new Error(`API request failed: ${result.statusText || result.message} (Status: ${result.status || 'unknown'})`);
-			}
-			
-			console.log(chalk.green("API request successful"));
-			return result.data;
-			
-		} catch (error) {
-			console.error(chalk.red("API request failed:"), error);
-			throw error;
+			};
+			page.on('response', handler);
+		});
+	}
+
+	// Lazily create (and reuse) a single authenticated page on www.duke-energy.com,
+	// and discover the account's alternateAccountId + meter numbers by letting
+	// the SPA's own JS load them (rather than guessing at its auth mechanism).
+	async ensureApiPage(): Promise<Page> {
+		if (this.apiPage && !this.apiPage.isClosed()) {
+			return this.apiPage;
 		}
+
+		const apiPage = await this.browser!.newPage();
+		await apiPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+		this.apiPage = apiPage;
+
+		console.log(chalk.yellow("Navigating to authenticated Duke Energy usage page..."));
+		const accountsListPromise = this.waitForApiResponse(apiPage, '/cdxp/api/auth/accounts/list', 'GET');
+		const meterDetailsPromise = this.waitForApiResponse(apiPage, '/cdxp/api/auth/usage/meter-details', 'GET');
+
+		await apiPage.goto('https://www.duke-energy.com/my-account/usage', {
+			waitUntil: 'networkidle2',
+			timeout: 45000
+		});
+
+		const accountsList = await accountsListPromise;
+		const meterDetails = await meterDetailsPromise;
+
+		const account = accountsList?.accountsList?.[0];
+		if (!account?.alternateAccountId) {
+			throw new Error("Could not determine alternateAccountId from accounts/list response");
+		}
+		this.altAcctId = account.alternateAccountId;
+
+		this.meterMap = {};
+		for (const m of meterDetails?.meterDetails ?? []) {
+			this.meterMap[m.serviceType] = {
+				full: m.meterNumber,
+				short: m.meterNumber.slice(-6)
+			};
+		}
+
+		console.log(chalk.green(`Account ${this.altAcctId} ready. Meters found: ${JSON.stringify(this.meterMap)}`));
+
+		return apiPage;
+	}
+
+	// Fetches daily usage for a service (GAS or ELEC) over an arbitrary date
+	// range by navigating the real usage page with the same bookmarkable URL
+	// query params the site itself uses (?tab=week&activeMeter=..&altAcctId=..
+	// &start=..&end=..), chunked into <=7 day windows, and capturing the
+	// SPA's own resulting /cdxp/api/auth/usage/meter response. Returns data
+	// reshaped into the old {Series1, TickSeries, UnitOfMeasure} format so
+	// the existing processGasData/processElectricData functions don't change.
+	async fetchMeterUsageRange(serviceType: 'GAS' | 'ELEC', startDate: Date, endDate: Date): Promise<any> {
+		const apiPage = await this.ensureApiPage();
+		const meter = this.meterMap?.[serviceType];
+		if (!meter) {
+			throw new Error(`No ${serviceType} meter found on this account (available: ${Object.keys(this.meterMap ?? {}).join(', ') || 'none'})`);
+		}
+
+		const usage: string[] = [];
+		const labels: string[] = [];
+		let unitOfMeasure: string | undefined;
+
+		let chunkStart = new Date(startDate);
+		while (chunkStart <= endDate) {
+			const chunkEnd = new Date(chunkStart);
+			chunkEnd.setDate(chunkEnd.getDate() + 6);
+			if (chunkEnd > endDate) {
+				chunkEnd.setTime(endDate.getTime());
+			}
+
+			const startStr = this.formatIsoDate(chunkStart);
+			const endStr = this.formatIsoDate(chunkEnd);
+			const url = `https://www.duke-energy.com/my-account/usage?tab=week&activeMeter=${meter.short}&altAcctId=${this.altAcctId}&start=${startStr}&end=${endStr}`;
+
+			console.log(chalk.blue(`Requesting ${serviceType} usage ${startStr} -> ${endStr}...`));
+
+			const responsePromise = this.waitForApiResponse(apiPage, '/cdxp/api/auth/usage/meter', 'POST');
+			await apiPage.goto(url, { waitUntil: 'networkidle2', timeout: 45000 });
+			const data = await responsePromise;
+
+			const meterUsage = data?.meterUsage;
+			if (meterUsage?.usage && meterUsage?.intervalLabels) {
+				usage.push(...meterUsage.usage);
+				labels.push(...meterUsage.intervalLabels);
+				unitOfMeasure = meterUsage.unitOfMeasure || unitOfMeasure;
+			} else {
+				console.log(chalk.yellow(`No usage data returned for ${startStr} -> ${endStr}`));
+			}
+
+			chunkStart = new Date(chunkEnd);
+			chunkStart.setDate(chunkStart.getDate() + 1);
+
+			await sleep(750); // be polite between navigations
+		}
+
+		console.log(chalk.green("API request successful"));
+		return { Series1: usage, TickSeries: labels, UnitOfMeasure: unitOfMeasure };
 	}
 
 	processElectricData(raw_data: any): any[] {
