@@ -687,6 +687,14 @@ export class Duke {
 		return `${year}-${month}-${day}`;
 	}
 
+	// MM-DD-YYYY, the format Duke's usage/meter request body uses for startDate/endDate.
+	formatDashDate(date: Date): string {
+		const month = (date.getMonth() + 1).toString().padStart(2, '0');
+		const day = date.getDate().toString().padStart(2, '0');
+		const year = date.getFullYear();
+		return `${month}-${day}-${year}`;
+	}
+
 	// Waits for the next response matching an exact pathname + HTTP method and
 	// returns its parsed JSON body. Used to capture data from requests the
 	// SPA's own JS fires - we never construct these requests ourselves, so
@@ -696,7 +704,18 @@ export class Duke {
 	// "/cdxp/api/auth/usage/meter" also matches "/cdxp/api/auth/usage/meter-details"
 	// (fired on every full page reload), which was silently swallowing the
 	// real usage response.
-	waitForApiResponse(page: Page, pathname: string, method: 'GET' | 'POST' = 'GET', timeoutMs = 30000): Promise<any> {
+	//
+	// bodyMatch (optional): inspects the *request* body of each candidate
+	// response and only accepts it if it returns true. The usage page can fire
+	// more than one usage/meter POST per load (e.g. a prior-period request),
+	// so without this we may resolve with data for the wrong date range.
+	waitForApiResponse(
+		page: Page,
+		pathname: string,
+		method: 'GET' | 'POST' = 'GET',
+		timeoutMs = 30000,
+		bodyMatch?: (body: any) => boolean
+	): Promise<any> {
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				page.off('response', handler);
@@ -707,6 +726,20 @@ export class Duke {
 				let urlPath: string;
 				try { urlPath = new URL(res.url()).pathname; } catch { return; }
 				if (urlPath !== pathname || res.request().method() !== method) return;
+
+				if (bodyMatch) {
+					let body: any;
+					try {
+						body = JSON.parse(res.request().postData() || '{}');
+					} catch {
+						return;
+					}
+					if (!bodyMatch(body)) {
+						console.log(chalk.yellow(`  Ignoring response for ${body?.startDate} -> ${body?.endDate} (meter ${body?.meterNumber})`));
+						return;
+					}
+				}
+
 				try {
 					const json = await res.json();
 					clearTimeout(timer);
@@ -774,6 +807,11 @@ export class Duke {
 	// SPA's own resulting /cdxp/api/auth/usage/meter response. Returns data
 	// reshaped into the old {Series1, TickSeries, UnitOfMeasure} format so
 	// the existing processGasData/processElectricData functions don't change.
+	//
+	// Each chunk only accepts a response whose request body startDate (and
+	// meterNumber) matches what we asked for, then double-checks the first
+	// returned label, retrying a few times before failing loudly. This
+	// prevents a stale/prior-week response from being stored under the wrong dates.
 	async fetchMeterUsageRange(serviceType: 'GAS' | 'ELEC', startDate: Date, endDate: Date): Promise<any> {
 		const apiPage = await this.ensureApiPage();
 		const meter = this.meterMap?.[serviceType];
@@ -784,6 +822,7 @@ export class Duke {
 		const usage: string[] = [];
 		const labels: string[] = [];
 		let unitOfMeasure: string | undefined;
+		const maxAttempts = 3;
 
 		let chunkStart = new Date(startDate);
 		while (chunkStart <= endDate) {
@@ -795,21 +834,69 @@ export class Duke {
 
 			const startStr = this.formatIsoDate(chunkStart);
 			const endStr = this.formatIsoDate(chunkEnd);
+			const expectedStart = this.formatDashDate(chunkStart);
+			const expectedFirstLabel = `${chunkStart.getMonth() + 1}/${chunkStart.getDate()}`;
 			const url = `https://www.duke-energy.com/my-account/usage?tab=week&activeMeter=${meter.short}&altAcctId=${this.altAcctId}&start=${startStr}&end=${endStr}`;
 
 			console.log(chalk.blue(`Requesting ${serviceType} usage ${startStr} -> ${endStr}...`));
 
-			const responsePromise = this.waitForApiResponse(apiPage, '/cdxp/api/auth/usage/meter', 'POST');
-			await apiPage.goto(url, { waitUntil: 'networkidle2', timeout: 45000 });
-			const data = await responsePromise;
+			let meterUsage: any;
+			let lastError: Error | undefined;
 
-			const meterUsage = data?.meterUsage;
-			if (meterUsage?.usage && meterUsage?.intervalLabels) {
+			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+				const responsePromise = this.waitForApiResponse(
+					apiPage,
+					'/cdxp/api/auth/usage/meter',
+					'POST',
+					30000,
+					(body) =>
+						body?.startDate === expectedStart &&
+						(!body?.meterNumber || body.meterNumber === meter.full)
+				);
+				// If goto() throws first, don't leave the wait promise as an unhandled rejection.
+				responsePromise.catch(() => {});
+
+				try {
+					await apiPage.goto(url, { waitUntil: 'networkidle2', timeout: 45000 });
+					const data = await responsePromise;
+					const candidate = data?.meterUsage;
+
+					if (!candidate?.usage || !candidate?.intervalLabels) {
+						// Legit "no data" for this window - nothing to retry.
+						console.log(chalk.yellow(`No usage data returned for ${startStr} -> ${endStr}`));
+						meterUsage = undefined;
+						lastError = undefined;
+						break;
+					}
+
+					console.log(chalk.gray(`  labels received: ${candidate.intervalLabels.join(', ')}`));
+
+					// Safety net: first label must be the day we asked for.
+					const [lm, ld] = String(candidate.intervalLabels[0]).split('/').map((n: string) => parseInt(n, 10));
+					if (lm !== chunkStart.getMonth() + 1 || ld !== chunkStart.getDate()) {
+						throw new Error(`Chunk ${startStr} -> ${endStr} returned data starting ${candidate.intervalLabels[0]}, expected ${expectedFirstLabel}`);
+					}
+
+					meterUsage = candidate;
+					lastError = undefined;
+					break;
+				} catch (err: any) {
+					lastError = err;
+					console.log(chalk.yellow(`  Attempt ${attempt}/${maxAttempts} failed for ${startStr} -> ${endStr}: ${err?.message || err}`));
+					if (attempt < maxAttempts) {
+						await sleep(1500);
+					}
+				}
+			}
+
+			if (lastError) {
+				throw lastError;
+			}
+
+			if (meterUsage) {
 				usage.push(...meterUsage.usage);
 				labels.push(...meterUsage.intervalLabels);
 				unitOfMeasure = meterUsage.unitOfMeasure || unitOfMeasure;
-			} else {
-				console.log(chalk.yellow(`No usage data returned for ${startStr} -> ${endStr}`));
 			}
 
 			chunkStart = new Date(chunkEnd);
