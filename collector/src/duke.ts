@@ -800,6 +800,9 @@ export class Duke {
 		return apiPage;
 	}
 
+	// NOTE: Duke moved the tab/start/end deep-link handling to the /usage/details
+	// route; plain /usage is now an "at a glance" page that ignores those params
+	// and only fires its default week + billing-cycle requests.
 	// Fetches daily usage for a service (GAS or ELEC) over an arbitrary date
 	// range by navigating the real usage page with the same bookmarkable URL
 	// query params the site itself uses (?tab=week&activeMeter=..&altAcctId=..
@@ -836,7 +839,7 @@ export class Duke {
 			const endStr = this.formatIsoDate(chunkEnd);
 			const expectedStart = this.formatDashDate(chunkStart);
 			const expectedFirstLabel = `${chunkStart.getMonth() + 1}/${chunkStart.getDate()}`;
-			const url = `https://www.duke-energy.com/my-account/usage?tab=week&activeMeter=${meter.short}&altAcctId=${this.altAcctId}&start=${startStr}&end=${endStr}`;
+			const url = `https://www.duke-energy.com/my-account/usage/details?tab=week&activeMeter=${meter.short}&altAcctId=${this.altAcctId}&start=${startStr}&end=${endStr}`;
 
 			console.log(chalk.blue(`Requesting ${serviceType} usage ${startStr} -> ${endStr}...`));
 
